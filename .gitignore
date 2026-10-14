@@ -1,0 +1,13 @@
+# 备份目录（脚本运行时生成，不要提交）
+backups/
+
+# 常见临时文件
+*.tmp
+*.log
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

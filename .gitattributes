@@ -1,0 +1,22 @@
+# 行尾符策略 / line-ending policy
+#
+# 本工具只在 Windows 上运行，而：
+#   - .bat 必须是 CRLF（cmd.exe 对纯 LF 的批处理容错性差）
+#   - .ps1 用 CRLF（与 Windows 习惯一致）
+#   - 文档与配置用 LF
+#
+# 不设 * text=auto，避免 git 按全局 core.autocrlf 猜。
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+
+*.md        text eol=lf
+.gitignore  text eol=lf
+LICENSE     text eol=lf
+
+# 二进制（本仓库目前没有，占位以防将来加入）
+*.png   binary
+*.ico   binary
+*.zip   binary
