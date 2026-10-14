@@ -40,6 +40,28 @@ OFM 自带「应用内升级」，但它长期不可靠，国内用户实际上�
 
 ---
 
+## 致谢
+
+**这个工具是站在 [Our Free Model](https://github.com/Ebony-Vinyl/dsh-our-free-model) 的肩膀上的。**
+
+没有上游那个项目，就没有这个脚本存在的理由 —— 它做的事（把十三个账号渠道、
+免费车道、EAC 垫资、聚合路由、省 token、原生 Anthropic 网关都收进一个插件里，
+且无需注册或填 API Key）本身就很了不起，而且迭代速度很快。
+
+感谢作者 **[@Ebony-Vinyl](https://github.com/Ebony-Vinyl)** 以及贡献者们
+（按上游发布说明整理）：
+
+- **[@look-back-lysj](https://github.com/look-back-lysj)** — 桌面版 PR 整合、EAC 服务迁移与离线密封工具
+- **[@zixin947](https://github.com/zixin947)** — 桌面启动与生命周期修复、发布签名、升级回退验证
+- **流影似景** — 前端夜/昼主题与 Tauri 桌面版初始实现
+
+本仓库与上游**没有任何隶属关系**，也没有得到官方背书。它只是一个用户侧的运维小工具：
+上游负责把插件做好，这里只负责在「应用内升级走不通」时，让更新这件事还能完成。
+
+如果上游哪天把升级通道修稳了，这个仓库就该退休了 —— 那才是更好的结局。
+
+---
+
 ## 相关工具
 
 如果你的需求更广（不只是 OFM 一个插件，还包括主程序或其它插件），
@@ -254,6 +276,27 @@ that manual flow into a double-clickable `.bat`.
 Each run backs up `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, the
 installed plugin directory, and OFM user data into `backups\<timestamp>\`.
 Roll back with `-Rollback`.
+
+### Credits
+
+This tool stands on the shoulders of
+[Our Free Model](https://github.com/Ebony-Vinyl/dsh-our-free-model) — without
+that project there would be no reason for this script to exist. Thanks to
+[@Ebony-Vinyl](https://github.com/Ebony-Vinyl) and the contributors
+([@look-back-lysj](https://github.com/look-back-lysj),
+[@zixin947](https://github.com/zixin947), and others).
+
+This repository is **not affiliated with or endorsed by** the upstream project.
+It is a user-side maintenance helper. If upstream ever makes the built-in
+updater reliable, this repo should retire — that would be the better outcome.
+
+### Related tools
+
+If your needs are broader (not just OFM, but the DSH host or other plugins):
+
+- [dsh-launcher](https://github.com/loudMore/dsh-launcher) — install / update / maintain dsh and plugins
+- [dsh-update-checker](https://github.com/Airmetro/dsh-update-checker) — npm/GitHub dual-source update checks
+- [dsh-our-free-model-installer](https://github.com/ImSusua/dsh-our-free-model-installer) — OFM desktop installer
 
 ---
 
