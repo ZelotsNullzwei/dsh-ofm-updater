@@ -6,6 +6,17 @@
 
 ---
 
+## 下载
+
+**最新版：[Releases → latest](https://github.com/ZelotsNullzwei/dsh-ofm-updater/releases/latest)**
+
+下载 `dsh-ofm-updater-vX.Y.Z.zip`，解压，双击 `Update-OurFreeModel.bat` 即可。
+压缩包内只有 4 个文件，不需要 git，不需要安装 Node。
+
+> 也可以直接克隆仓库：`git clone https://github.com/ZelotsNullzwei/dsh-ofm-updater`
+
+---
+
 ## 为什么需要它
 
 先说清楚：**Our Free Model 本身是个很好的项目**，作者和贡献者一直在快速迭代。
@@ -26,6 +37,19 @@ OFM 自带「应用内升级」，但它长期不可靠，国内用户实际上�
 
 > 这些坑都是实际踩出来的，Issue 编号只是引用公开记录，不是为了指责任何人。
 > 如果上游之后修好了应用内升级，本仓库就可以退休了。
+
+---
+
+## 相关工具
+
+如果你的需求更广（不只是 OFM 一个插件，还包括主程序或其它插件），
+下面这些项目可能更适合：
+
+- [dsh-launcher](https://github.com/loudMore/dsh-launcher) — 一键安装 / 更新 / 维护 dsh 与插件
+- [dsh-update-checker](https://github.com/Airmetro/dsh-update-checker) — npm / GitHub 双源更新检查
+- [dsh-our-free-model-installer](https://github.com/ImSusua/dsh-our-free-model-installer) — OFM 桌面端一键安装器
+
+本工具只专注一件事：**OFM 在国内网络下的一键更新**（含 PATH 修复与慢网络处理）。
 
 ---
 
