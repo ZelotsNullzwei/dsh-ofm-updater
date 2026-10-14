@@ -1,0 +1,14 @@
+﻿# 统一编辑器行为 / keep editors consistent
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{md,yml,yaml}]
+end_of_line = lf
+
+[*.ps1]
+charset = utf-8-bom
