@@ -10,7 +10,30 @@
     #232  升级检查响应超 256KB 上限 → 所有版本失效
   所以国内用户实际上只能手动更新。
 
-  这个脚本把那套手动流程固化成双击即可完成，并且处理了三个坑：
+  ⚠️ 2026-10-18 新增：OFM 内置「立即升级」的**热重载路径缺陷**
+  ------------------------------------------------------------------
+  症状（几乎每次跨版本都会遇到）：
+
+    升级失败：upgrade failed, previous files restored
+    (re-import failed, old code still running
+     (activation version mismatch: expected 2.5.3, got 2.5.1))
+
+  原因在 OFM 自己的 src/reload.js：
+
+    写新文件 → 清 Node 的 ESM / require 缓存 → 重新 import 入口
+    → 校验新模块报的 version 是否等于期望值
+
+  第 2 步「清缓存」在 Node 里**不可能彻底**：已经求值过的 ESM 模块，
+  即使从 loadCache / require.cache 里删掉，也可能还有别处持有旧引用。
+  于是重新 import 拿到的仍是旧版本 → version mismatch → 判定失败 → 回滚。
+
+  结论：**跨版本升级必须重启进程，靠热重载是做不到的。**
+  OFM 的「文件变化自动热重载」只适合同版本内的开发迭代。
+
+  所以本脚本的设计前提是：**先完全退出 DSH，再改文件，最后重新打开**。
+  脚本能装成功但无法替你重启，装完必须手动重启（见最后提示）。
+
+  这个脚本把那套手动流程固化成双击即可完成，并且处理了四个坑：
 
     坑 1  dsh 和 pnpm 不在系统 PATH 里
           DSH Desktop 只把它们注入自己派生的进程；双击打开的干净 cmd
@@ -27,18 +50,28 @@
           ERR_PNPM_MISSING_TARBALL_INTEGRITY。
           必须用 codeload.github.com + 固定 commit sha。
 
+    坑 4  「装 main 最新提交」等于装未发布的中间态
+          官方发布流程是 tag + Ed25519 签名 + manifest 钉死 sha256。
+          main 上随时可能有未发布提交（实测 2026-10-18：release v2.5.3
+          对应 e465d73，main 已到 f0b979f）。装 main 会让 manifest 摘要
+          对不上，OFM 自己的更新检查随后报
+          "the committed digests do not describe the files on disk"。
+          所以本脚本默认只装**最新 release tag**；要试 main 显式传
+          -TargetBranch main。
+
   用法
   ------------------------------------------------------------------
     1. 完全退出 DSH Desktop（包含托盘图标；确认任务管理器里没有 DSH Desktop）
     2. 双击 更新-OurFreeModel.bat
-    3. 重新启动 DSH Desktop
+    3. **重新启动 DSH Desktop**（不重启的话跑的还是旧代码 —— 见上面热重载缺陷）
 
   命令行参数
   ------------------------------------------------------------------
-    -English        用英文输出（默认中文）
-    -DryRun         只检查，不改动任何东西
-    -Rollback       回滚到上一次备份
-    -TargetSha <sha> 安装指定的 commit（默认：main 最新）
+    -English         用英文输出（默认中文）
+    -DryRun          只检查，不改动任何东西
+    -Rollback        回滚到上一次备份
+    -TargetSha <sha> 安装指定的 commit
+    -TargetBranch <b> 跟踪某分支最新提交（默认不跟分支，只装 release）
     -Profile <name>  DSH profile 名（默认 desktop）
 
   编码说明
@@ -52,8 +85,10 @@ param(
   [switch]$English,
   [switch]$DryRun,
   [switch]$Rollback,
-  [string]$TargetSha = '',
-  [string]$Profile   = 'desktop'
+  [string]$TargetSha    = '',
+  # 显式跟踪某个分支（开发/调试用）。默认空 = 装最新 release tag。
+  [string]$TargetBranch = '',
+  [string]$Profile      = 'desktop'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -333,21 +368,57 @@ if ($currentSha) { Say "  $($T.CurCommit): $currentSha" }
 
 # ====================================================================
 #  6. 确定目标 commit
+#
+#  ⚠️ 2026-10-18 改动：默认改为跟踪**最新 release tag**，不再跟 main。
+#
+#  为什么不能跟 main：
+#    main 上随时可能有未发布的中间提交（实测 2026-10-18：release v2.5.3
+#    对应 e465d73，而 main 已经跑到 f0b979f，多了一个 docs 提交）。
+#    装 main 等于装一个**没经过发布签名与验收**的中间态：
+#      · 官方发布流程是 tag + Ed25519 签名 + manifest 钉死 sha256；
+#      · 装未发布提交会让 feed/manifest.json 的摘要对不上，
+#        之后 OFM 自己的更新检查会报 "the committed digests do not
+#        describe the files on disk"；
+#      · 真正发版时你还得再覆盖一次。
+#    所以默认只装官方发布版；确实要试 main，显式传 -TargetBranch main。
 # ====================================================================
 Head '3' $T.Step3
 $targetShaResolved = $TargetSha
+$targetLabel       = ''
 if (-not $targetShaResolved) {
   try {
-    $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/commits/main" `
-      -Headers @{ 'User-Agent' = 'dsh-ofm-updater' } -TimeoutSec 40
-    $targetShaResolved = $resp.sha
-    Say "  $($T.Latest): $targetShaResolved"
-    Say "  date    : $($resp.commit.author.date)" DarkGray
-    Say "  message : $(($resp.commit.message -split "`n")[0])" DarkGray
+    if ($TargetBranch) {
+      # 显式要求跟分支（开发用）
+      $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/commits/$TargetBranch" `
+        -Headers @{ 'User-Agent' = 'dsh-ofm-updater' } -TimeoutSec 40
+      $targetShaResolved = $resp.sha
+      $targetLabel = "$TargetBranch@$(($resp.commit.message -split "`n")[0])"
+      Say "  $($T.Latest) [$TargetBranch]: $targetShaResolved" Yellow
+      Say "  ⚠ 这是分支最新提交，不是官方发布版，仅供调试" Yellow
+      Say "  date    : $($resp.commit.author.date)" DarkGray
+    } else {
+      # 默认：最新 release
+      $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" `
+        -Headers @{ 'User-Agent' = 'dsh-ofm-updater' } -TimeoutSec 40
+      if (-not $rel.tag_name) { throw 'releases/latest 没有返回 tag_name' }
+      # target_commitish 通常就是 tag 指向的 commit sha（实测 v2.5.3 直接给 40 位 sha）
+      $targetShaResolved = $rel.target_commitish
+      if ($targetShaResolved -notmatch '^[0-9a-f]{40}$') {
+        # 少数情况给的是分支名，回退去查 tag ref
+        $tagRef = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/git/ref/tags/$($rel.tag_name)" `
+          -Headers @{ 'User-Agent' = 'dsh-ofm-updater' } -TimeoutSec 40
+        $targetShaResolved = $tagRef.object.sha
+      }
+      $targetLabel = $rel.tag_name
+      Say "  $($T.Latest) [release]: $($rel.tag_name)  →  $targetShaResolved"
+      Say "  published: $($rel.published_at)" DarkGray
+      Say "  url      : $($rel.html_url)" DarkGray
+    }
   } catch {
     Say "  $($T.Fail): $($_.Exception.Message)" Red
     Say "  If GitHub is unreachable, pass a commit manually:" DarkGray
     Say "    -TargetSha <40-char-sha>" DarkGray
+    Say "    -TargetBranch main   (track branch instead of release)" DarkGray
     Say ""
   Wait-Key
     exit 1
@@ -371,9 +442,11 @@ $spec = "https://codeload.github.com/$REPO/tar.gz/$targetShaResolved"
 if ($DryRun) {
   Say ""
   Say "[DryRun] $($T.WouldRun):" Yellow
+  if ($targetLabel) { Say "  target : $targetLabel ($targetShaResolved)" Gray }
   Say "  dsh plugin --profile $Profile add `"$spec`"" Gray
   Say "  backup: package.json / pnpm-lock.yaml / node_modules\$PKG_NAME / user data" Gray
   Say ""
+  Say "  装完必须完全退出 DSH 再打开（热重载无法跨版本生效）" Yellow
   Say "  (nothing was changed)" Yellow
   Say ""
   Wait-Key
@@ -426,8 +499,19 @@ Head '6' $T.Step6
 Line
 if ($code -eq 0) {
   $pkg2 = Get-Content $pkgJson -Raw | ConvertFrom-Json
+  $newVer = $pkg2.version
   Say "  $($T.UpdateOk)" Green
   Say "  new spec: $($pkg2.dependencies.$PKG_NAME)"
+  if ($newVer) { Say "  new version: $newVer" Green }
+  Say ""
+  # 必须重启 —— 这是跨版本升级的唯一生效方式（见文件头「热重载缺陷」）
+  Say "  ╔══════════════════════════════════════════════════════════╗" Yellow
+  Say "  ║  必须完全退出 DSH Desktop 再重新打开                     ║" Yellow
+  Say "  ╚══════════════════════════════════════════════════════════╝" Yellow
+  Say "  文件已就位，但**运行中的进程仍是旧代码**。" Yellow
+  Say "  OFM 的「立即升级 / 热重载」无法跨版本生效，会报：" DarkGray
+  Say "    activation version mismatch: expected X, got Y" DarkGray
+  Say "  直接重启即可，不用管 OFM 那个失败提示。" DarkGray
   Say ""
   Say "  $($T.NextStart)" Cyan
   if (-not $English) {

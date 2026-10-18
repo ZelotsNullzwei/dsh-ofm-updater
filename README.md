@@ -33,10 +33,14 @@ OFM 自带「应用内升级」，但它长期不可靠，国内用户实际上�
 | [#120](https://github.com/Ebony-Vinyl/dsh-our-free-model/issues/120) | 升 2.0.0 必然失败（4 个文件与签名清单不符） |
 | [#232](https://github.com/Ebony-Vinyl/dsh-our-free-model/issues/232) | 升级检查响应超 256KB 上限 → 所有版本失效 |
 
-本脚本把「手动更新」这件事固化成双击一个 `.bat`，并处理掉实操中的三个坑。
+本脚本把「手动更新」这件事固化成双击一个 `.bat`，并处理掉实操中的四个坑。
 
 > 这些坑都是实际踩出来的，Issue 编号只是引用公开记录，不是为了指责任何人。
 > 如果上游之后修好了应用内升级，本仓库就可以退休了。
+
+另外还解决一个**不算 bug 但更容易卡住人**的问题：OFM 内置的「立即升级」是热重载
+实现的，**在 Node 上无法跨版本生效**，几乎必然报
+`activation version mismatch`。详见 [关于 OFM 内置的「立即升级」](#️-关于-ofm-内置的立即升级)。
 
 ---
 
@@ -91,7 +95,7 @@ OFM 自带「应用内升级」，但它长期不可靠，国内用户实际上�
 
 ---
 
-## 它解决的三个坑
+## 它解决的四个坑
 
 ### 1. `dsh` 和 `pnpm` 不在系统 PATH 里
 
@@ -153,6 +157,70 @@ https://codeload.github.com/Ebony-Vinyl/dsh-our-free-model/tar.gz/<sha>
 
 本脚本就是这么做的。
 
+### 4. 装 `main` 最新提交 ≠ 装发布版
+
+> 2026-10-18 更新
+
+官方发布流程是 **tag + Ed25519 签名 + manifest 钉死 sha256**。而 `main` 上随时可能有
+未发布的中间提交 —— 实测当天：
+
+| | commit | 说明 |
+| --- | --- | --- |
+| release `v2.5.3` | `e465d73` | 官方签名发布版 |
+| `main` 最新 | `f0b979f` | 多一个 docs 提交（未发布） |
+
+跟 `main` 装的话，`feed/manifest.json` 里的摘要和磁盘文件对不上，之后 OFM 自己的
+更新检查会报：
+
+```
+the committed digests do not describe the files on disk:
+  vendor/channel-pack/pack.js: size 2882871 in the manifest, 2883308 on disk
+```
+
+所以本脚本**默认只装最新 release tag**。要试 `main` 请显式传 `-TargetBranch main`。
+
+---
+
+## ⚠️ 关于 OFM 内置的「立即升级」
+
+**这是本仓库存在的另一个原因，也是很多人卡住的地方。**
+
+如果你在 OFM 设置页点过「立即升级」，大概率见过这个：
+
+```
+升级失败: upgrade failed, previous files restored
+(re-import failed, old code still running
+ (activation version mismatch: expected 2.5.3, got 2.5.1))
+```
+
+**这不是网络问题，也不是你操作错了 —— 是热重载在 Node 上做不到跨版本升级。**
+
+OFM 的升级流程（`src/reload.js`）：
+
+1. 下载新文件并落盘
+2. 清掉 Node 的 ESM `loadCache` 与 CJS `require.cache`
+3. 重新 `import()` 入口
+4. **校验新模块报的 `version` 是否等于期望值**
+5. 对不上 → 判定失败 → 回滚文件
+
+问题在第 2 步：**Node 的模块缓存不可能被彻底清干净**。已经求值过的 ESM 模块
+即使从 cache 里删掉，也可能还有别处持有旧引用，于是第 3 步 `import()` 拿到的
+仍然是**旧版本**，第 4 步必然 mismatch。
+
+**结论：跨版本升级必须重启进程。** OFM 那个「文件变化自动热重载」开关
+只适合同版本内的开发迭代，不适合升级。
+
+所以：
+
+- 本脚本要求你**先退出 DSH** 再运行，装完**必须重新打开**
+- 装完看到 OFM 里的版本号还是旧的？重启后就对了
+- 不用管 OFM 那个升级失败提示，它不是你的问题
+
+### 为什么脚本不帮你重启
+
+因为 DSH 重启会打断你自己正在做的事，而且托盘退出、进程残留这些状态
+脚本没法可靠判断。**明确让你自己重启，比脚本猜着杀进程安全。**
+
 ---
 
 ## 命令行参数
@@ -162,7 +230,8 @@ https://codeload.github.com/Ebony-Vinyl/dsh-our-free-model/tar.gz/<sha>
 | `-English` | 用英文输出（默认中文） |
 | `-DryRun` | 只检查，不改动任何东西 |
 | `-Rollback` | 回滚到上一次备份 |
-| `-TargetSha <sha>` | 安装指定的 commit（默认：main 最新） |
+| `-TargetSha <sha>` | 安装指定的 commit |
+| `-TargetBranch <branch>` | 跟踪某分支最新提交（默认不跟分支，只装 release） |
 | `-Profile <name>` | DSH profile 名（默认 `desktop`） |
 
 例子：
@@ -265,11 +334,40 @@ that manual flow into a double-clickable `.bat`.
    so pnpm cannot record an integrity hash and fails with
    `ERR_PNPM_MISSING_TARBALL_INTEGRITY`. Always use `codeload.github.com` with a
    pinned commit sha.
+4. **Installing `main` ≠ installing a release.** Upstream publishes as
+   *tag + Ed25519 signature + manifest-pinned sha256*, and `main` regularly runs
+   ahead of the newest tag (measured 2026-10-18: release `v2.5.3` = `e465d73`,
+   `main` = `f0b979f`). Installing `main` makes `feed/manifest.json` disagree with
+   the files on disk. The script therefore installs **the latest release tag by
+   default**; pass `-TargetBranch main` only if you really want a branch head.
+
+### ⚠️ About OFM's built-in "Upgrade now"
+
+If you ever clicked it, you probably saw:
+
+```
+upgrade failed, previous files restored
+(re-import failed, old code still running
+ (activation version mismatch: expected 2.5.3, got 2.5.1))
+```
+
+**That is not a network problem or user error.** OFM upgrades by hot-reloading:
+write files → purge Node's ESM `loadCache` and CJS `require.cache` → re-`import()`
+the entry → verify the new module's `version`. Step 2 **cannot be done reliably in
+Node**: an already-evaluated ESM module may still be referenced elsewhere, so the
+re-import returns the *old* code, the version check fails, and the upgrade rolls
+back.
+
+**Cross-version upgrades require a process restart.** OFM's "auto hot-reload on
+file change" toggle only makes sense for same-version development.
+
+Therefore: exit DSH before running this script, and **restart DSH afterwards**.
+A stale version number inside OFM after installing is expected until you restart.
 
 ### Options
 
 `-English` (English output), `-DryRun`, `-Rollback`, `-TargetSha <sha>`,
-`-Profile <name>`.
+`-TargetBranch <branch>`, `-Profile <name>`.
 
 ### Backup
 
