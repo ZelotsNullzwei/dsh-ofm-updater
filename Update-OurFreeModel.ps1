@@ -135,6 +135,7 @@ $T = if ($English) {
     NodeOkPath   = 'node found'
     NodeOptional = 'node not found (fine - dsh carries its own runtime)'
     PathFixed    = 'PATH repaired: dsh and pnpm are now callable'
+    NetTuned     = 'pnpm network timeouts widened (10 min / 5 retries)'
     PathFail     = 'Could not locate the required command(s). Is DSH Desktop installed and started at least once?'
     Updating     = 'Installing'
     UpdateOk     = 'Update succeeded'
@@ -181,6 +182,7 @@ $T = if ($English) {
     NodeOkPath   = '已找到 node'
     NodeOptional = '未找到 node（不影响，dsh 自带运行时）'
     PathFixed    = 'PATH 已修复：dsh 与 pnpm 都可调用'
+    NetTuned     = '已放宽 pnpm 网络超时（10 分钟 / 重试 5 次）'
     PathFail     = '找不到必需的命令。DSH Desktop 是否已安装并至少启动过一次？'
     Updating     = '正在安装'
     UpdateOk     = '更新成功'
@@ -487,6 +489,42 @@ Say "  $($T.BackupAt): $backup" Cyan
 Head '5' $T.Step5
 Say "  $($T.Updating): $spec" DarkGray
 Say ""
+
+# ── 放宽 pnpm 的网络超时 ────────────────────────────────────────────────
+#
+# 实测（2026-10-20）：codeload 下载 9 MB 包只有 ~35 KB/s，需要 4~5 分钟。
+# 而 pnpm 默认 fetch-timeout 是 60 秒 —— 必然超时：
+#
+#   [23] The operation was aborted due to timeout
+#   TimeoutError: The operation was aborted due to timeout
+#   dsh: plugin command failed
+#
+# 原来脚本文档里写着"会放宽 pnpm 超时"，但**从来没真正写过配置**。
+# 现在写进 profile 的 .npmrc（pnpm 会读它），并且只加我们需要的几项，
+# 不动用户已有的其它设置。
+$npmrc = Join-Path $PROFILE_DIR '.npmrc'
+$want = [ordered]@{
+  'fetch-timeout'           = '600000'   # 10 分钟
+  'fetch-retries'           = '5'
+  'fetch-retry-mintimeout'  = '10000'
+  'fetch-retry-maxtimeout'  = '120000'   # 单次重试最长等 2 分钟
+  'network-concurrency'     = '4'        # 别把小水管挤爆
+}
+try {
+  $existing = @{}
+  if (Test-Path $npmrc) {
+    foreach ($line in Get-Content $npmrc -Encoding UTF8) {
+      if ($line -match '^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$') { $existing[$matches[1]] = $matches[2] }
+    }
+  }
+  foreach ($k in $want.Keys) { $existing[$k] = $want[$k] }
+  $out = foreach ($k in $existing.Keys) { "$k=$($existing[$k])" }
+  Set-Content -Path $npmrc -Value $out -Encoding UTF8
+  Say "  $($T.NetTuned)" DarkGray
+} catch {
+  # 写不进去不该阻断安装 —— 退回到"可能会超时"的老行为
+  Say "  (could not write .npmrc: $($_.Exception.Message))" DarkYellow
+}
 
 $logFile = Join-Path $backup 'update.log'
 & dsh plugin --profile $Profile add $spec 2>&1 | Tee-Object -FilePath $logFile
