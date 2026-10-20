@@ -136,6 +136,10 @@ $T = if ($English) {
     NodeOptional = 'node not found (fine - dsh carries its own runtime)'
     PathFixed    = 'PATH repaired: dsh and pnpm are now callable'
     NetTuned     = 'pnpm network timeouts widened (10 min / 5 retries)'
+    Downloading  = 'Downloading'
+    DownloadOk   = 'Download complete'
+    DownloadCached = 'Using cached file'
+    DownloadFailed = 'Download incomplete'
     PathFail     = 'Could not locate the required command(s). Is DSH Desktop installed and started at least once?'
     Updating     = 'Installing'
     UpdateOk     = 'Update succeeded'
@@ -183,6 +187,10 @@ $T = if ($English) {
     NodeOptional = '未找到 node（不影响，dsh 自带运行时）'
     PathFixed    = 'PATH 已修复：dsh 与 pnpm 都可调用'
     NetTuned     = '已放宽 pnpm 网络超时（10 分钟 / 重试 5 次）'
+    Downloading  = '正在下载'
+    DownloadOk   = '下载完成'
+    DownloadCached = '使用已缓存的文件'
+    DownloadFailed = '下载未完成'
     PathFail     = '找不到必需的命令。DSH Desktop 是否已安装并至少启动过一次？'
     Updating     = '正在安装'
     UpdateOk     = '更新成功'
@@ -437,9 +445,94 @@ if ($currentSha -and $targetShaResolved -eq $currentSha) {
   exit 0
 }
 
-# codeload + 固定 sha。绝不要用 archive/refs/heads/main.tar.gz（内容可变，
-# pnpm 记不了 integrity，会报 ERR_PNPM_MISSING_TARBALL_INTEGRITY）。
-$spec = "https://codeload.github.com/$REPO/tar.gz/$targetShaResolved"
+# ⚠️ 下载方式（2026-10-20 重写）
+#
+# 原来直接把 codeload 的 tar.gz URL 交给 pnpm add。两个致命问题：
+#
+#   ① 体积大：codeload 打包整个仓库 = 12 MB；而 release 里的 tgz 只有 1.3 MB
+#      （只含 package/ 目录，不含 .git、测试、截图）。
+#   ② **不支持断点续传**：实测
+#        curl: (33) HTTP server does not seem to support byte ranges.
+#      21~35 KB/s 下 12 MB 要 5~7 分钟，中途断一次就前功尽弃 ——
+#      实测 479 秒后 "从传输流收到意外的 EOF"，pnpm 报 timeout 退出。
+#
+# 而 GitHub release 的 asset 走 objects.githubusercontent.com：
+#   · 支持 Range（HTTP 206 + Accept-Ranges: bytes）
+#   · 只有 1.3 MB
+#   · 实测 3 轮续传 44.8 秒下完
+#
+# 所以改成：**先用 curl 把 release asset 下到本地，再 pnpm add 本地文件**。
+# pnpm 装本地 tgz 是原生支持的，不经过网络。
+#
+# 只有拿不到 release asset 时才回退到 codeload（老路径）。
+
+$spec = $null
+$localTgz = $null
+
+# 只有走"最新 release"这条路径时才有 $rel；-TargetSha 手动指定时没有。
+if ($rel -and ($rel.assets | Where-Object { $_.name -like '*.tgz' })) {
+  $asset = $rel.assets | Where-Object { $_.name -like '*.tgz' } | Select-Object -First 1
+  $cacheDir = Join-Path $BACKUP_ROOT '_downloads'
+  New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+  $tgzPath = Join-Path $cacheDir $asset.name
+
+  # 已完整下载过就跳过（按大小判断；asset.size 是权威值）
+  $needDownload = $true
+  if (Test-Path $tgzPath) {
+    $have = (Get-Item $tgzPath).Length
+    if ($have -eq $asset.size) { $needDownload = $false }
+  }
+
+  if ($needDownload) {
+    Say "  $($T.Downloading) $($asset.name) ($([math]::Round($asset.size/1KB)) KB)" DarkGray
+    Say "    $($asset.browser_download_url)" DarkGray
+    Say ""
+
+    # ── 断点续传循环 ────────────────────────────────────────────
+    # curl -C - 让服务端从已有字节处继续；每次最多跑 45 秒，
+    # 断了就再来一轮。最多 40 轮（够 30 分钟），防止死循环。
+    $curlExe = Join-Path $env:SystemRoot 'System32\curl.exe'
+    $ok = $false
+    for ($attempt = 1; $attempt -le 40; $attempt++) {
+      $have = if (Test-Path $tgzPath) { (Get-Item $tgzPath).Length } else { 0 }
+      if ($have -ge $asset.size) { $ok = $true; break }
+
+      Write-Host ("    [{0}] {1}/{2} KB" -f $attempt, [math]::Round($have/1KB), [math]::Round($asset.size/1KB)) -NoNewline
+
+      # -C -      断点续传
+      # --retry   单次连接内重试
+      # --max-time 45  每轮最多 45 秒，避免卡死
+      & $curlExe -sL --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 `
+        -C - -o $tgzPath $asset.browser_download_url 2>$null
+
+      $now = if (Test-Path $tgzPath) { (Get-Item $tgzPath).Length } else { 0 }
+      Write-Host ("  -> {0} KB" -f [math]::Round($now/1KB))
+
+      if ($now -ge $asset.size) { $ok = $true; break }
+      if ($now -le $have) {
+        # 这一轮没有进展 —— 服务端可能限速，歇一下再试
+        Start-Sleep -Seconds 2
+      }
+    }
+
+    if (-not $ok) {
+      Say "  $($T.DownloadFailed) $([math]::Round((Get-Item $tgzPath).Length/1KB)) KB / $([math]::Round($asset.size/1KB)) KB" Red
+      Say "  (retry later, or open a proxy and re-run)" DarkYellow
+      Wait-Key
+      exit 1
+    }
+    Say "  $($T.DownloadOk) $([math]::Round($asset.size/1KB)) KB" Green
+  } else {
+    Say "  $($T.DownloadCached) $([math]::Round($asset.size/1KB)) KB" DarkGray
+  }
+
+  $localTgz = $tgzPath
+  $spec = $localTgz
+} else {
+  # 回退：没有 release asset 时用 codeload（会慢，且不支持续传）
+  Say "  (no release .tgz asset — falling back to codeload tarball)" DarkYellow
+  $spec = "https://codeload.github.com/$REPO/tar.gz/$targetShaResolved"
+}
 
 if ($DryRun) {
   Say ""
